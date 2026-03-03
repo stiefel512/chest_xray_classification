@@ -52,6 +52,10 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
     """
     model.train()
     
+    for m in model.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.eval()
+    
     train_loss = 0.0
     correct = 0
     total = 0
@@ -59,13 +63,13 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
     for batch_idx, batch in enumerate(loader):
         # Unpack the batch
         x, y = batch
-        x, y = x.to(device), y.to(device)
+        x, y = x.to(device), y.to(device).float()
         
         # Compute the predictions
         pred = model(x)
         
         # Compute the loss
-        loss = loss_fn(pred, y.unsqueeze(1).float())
+        loss = loss_fn(pred, y.unsqueeze(1))
         train_loss += loss.item() * x.size(0)
         
         correct += ((torch.sigmoid(pred) > 0.5).long() == y.unsqueeze(1)).sum().item()
@@ -110,29 +114,33 @@ def validate(model: nn.Module,
     model.eval()
     val_loss = 0
     all_labels = []
-    all_probs = []
+    all_preds = []
     with torch.no_grad():  # Disable Gradient Calculation
         for batch_idx, batch in enumerate(loader):
             # Unpack the batch
             x, y = batch
-            x, y = x.to(device), y.to(device)
+            x, y = x.to(device), y.to(device).float()
             all_labels.append(y)
             # Compute the predictions
             pred = model(x)
 
             # Compute the loss
-            loss = loss_fn(pred, y.unsqueeze(1).float())
+            loss = loss_fn(pred, y.unsqueeze(1))
             
             val_loss += loss.item() * x.size(0)
-            probs = torch.sigmoid(pred)
-            all_probs.append(probs)
+            # probs = torch.sigmoid(pred)
+            all_preds.append(pred)
               
-    probs = torch.cat(all_probs, dim=0).squeeze()
+    preds = torch.cat(all_preds, dim=0).squeeze()
+    probs = torch.sigmoid(preds)
+    
+    print(preds.mean().item(), preds.std().item())
+    
     labels = torch.cat(all_labels, dim=0)
     avg_loss = val_loss / len(loader.dataset)
     accuracy = 100 * acc_metric(probs, labels).cpu().item()
     auroc = auroc_metric(probs, labels).cpu().item()
-    ap = ap_metric(probs, labels).cpu().item()
+    ap = ap_metric(probs, labels.long()).cpu().item()
     ppr = 100 * (probs > 0.5).long().sum().cpu().item() / len(loader.dataset)
             
     return avg_loss, accuracy, auroc, ap, ppr
@@ -277,7 +285,7 @@ def train(cfg: OmegaConf) -> None:
         print(f"\t\t:Val Loss {val_loss}, Val Acc {val_acc}, Val ROC-AUC {val_auroc}, Val AP {val_ap}, Val PPR {val_ppr}")
 
         results.append({'epoch': epoch, 
-                        'lr': scheduler.get_last_lr()[0], 
+                        'lr': scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]['lr'], 
                         'train_loss': train_loss, 
                         'train_acc': train_acc, 
                         'val_loss': val_loss, 
@@ -289,7 +297,8 @@ def train(cfg: OmegaConf) -> None:
             best_acc = val_acc
             torch.save(model.state_dict(), f"{cfg.experiment.output_dir}/best.pt")
         # Advance the LR Scheduler
-        scheduler.step()
+        if scheduler:
+            scheduler.step()
     
     torch.save(model.state_dict(), f"{cfg.experiment.output_dir}/last.pt")
     results_df = pd.DataFrame(results)

@@ -3,6 +3,7 @@ import numpy as np
 from pathlib import Path
 from omegaconf import OmegaConf
 from typing import Tuple
+from PIL import Image
 
 from sklearn.model_selection import GroupShuffleSplit
 
@@ -29,6 +30,9 @@ def assign_targets(df: pd.DataFrame, pathology: str) -> pd.DataFrame:
 
 
 def split_df_for_train_test(df: pd.DataFrame, split: float) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if split == 0.0: 
+        return df, df
+    
     gss = GroupShuffleSplit(
         test_size=split,
         n_splits=1,
@@ -85,11 +89,11 @@ if __name__ == "__main__":
     subset_df = pd.concat((pos_df, neg_df))
     
     # Assign targets
-    subset_df = assign_targets(subset_df, cfg.dataset.pathology)
+    subset_df = assign_targets(subset_df, cfg.data.pathology)
     
     # Create Train, Validation and Test splits
-    trainval_df, test_df = split_df_for_train_test(subset_df, cfg.dataset.train_test_split)
-    train_df, val_df = split_df_for_train_test(trainval_df, cfg.dataset.train_val_split)
+    trainval_df, test_df = split_df_for_train_test(subset_df, cfg.data.train_test_split)
+    train_df, val_df = split_df_for_train_test(trainval_df, cfg.data.train_val_split)
     
     # Verify label balance per split
     print("Train:", summarize(train_df))

@@ -122,10 +122,11 @@ def build_dataloader(cfg: OmegaConf, stage: Literal["train", "val", "test"]) -> 
     dataloader = DataLoader(
         dataset = ds,
         batch_size = cfg.data.batch_size,
-        shuffle = True,
+        shuffle = True if stage == 'train' else False,
         num_workers = cfg.data.num_workers,
         worker_init_fn = seed_worker,
-        generator = g
+        generator = g,
+        pin_memory = True if stage == 'train' else False
     )
     return dataloader
 
@@ -213,6 +214,17 @@ def build_optimizer(optimizer_conf: OmegaConf, model: nn.Module) -> torch.optim.
     Returns:
         torch.optim.Optimizer: SGD or Adam optimizer
     """
+    
+    # Decouple batch norm from weight decay for small DS
+    decay = []
+    no_decay = []
+
+    for name, param in model.named_parameters():
+        if param.ndim == 1 or "bias" in name:
+            no_decay.append(param)
+        else:
+            decay.append(param)
+    
     if optimizer_conf.type == 'SGD':
         return torch.optim.SGD(
             model.parameters(),
@@ -226,7 +238,14 @@ def build_optimizer(optimizer_conf: OmegaConf, model: nn.Module) -> torch.optim.
             lr = optimizer_conf.lr,
             weight_decay = optimizer_conf.weight_decay
         )
-        
+    elif optimizer_conf.type == 'AdamW':
+        return torch.optim.AdamW(
+            [
+                {"params": decay, "weight_decay": optimizer_conf.weight_decay},
+                {"params": no_decay, "weight_decay": 0.0},
+            ],
+            lr = optimizer_conf.lr,
+        )
     else:
         raise Exception("Optimizer type not supported")
     
@@ -244,6 +263,9 @@ def build_scheduler(cfg: OmegaConf, optimizer: torch.optim.Optimizer) -> torch.o
     Returns:
         torch.optim.lr_scheduler.LRScheduler: The scheduler
     """
+    if cfg.scheduler.type not in ['cosine', 'step']:
+        return None
+    
     if cfg.scheduler.warmup is not None and cfg.scheduler.warmup.epochs > 0:
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
             optimizer=optimizer,
@@ -269,7 +291,7 @@ def build_scheduler(cfg: OmegaConf, optimizer: torch.optim.Optimizer) -> torch.o
             gamma=cfg.scheduler.step_schedule.gamma
         )
     else:
-        raise Exception("Unsupported LR Scheduler")
+        return None
     
     if warmup_scheduler is None:
         return main_scheduler
