@@ -7,6 +7,10 @@ from typing import Literal
 
 
 resnet_config = {
+    10: {
+        "block": ResidualBlock,
+        "num_blocks": [1, 1, 1, 1]
+    },
     18: {
         "block": ResidualBlock,
         "num_blocks": [2, 2, 2, 2]

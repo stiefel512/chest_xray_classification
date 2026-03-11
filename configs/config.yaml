@@ -2,7 +2,7 @@
 experiment:
   name: resnet18_xray
   seed: 42
-  output_dir: experiments/resnet18_experiment2
+  output_dir: experiments/experiment1
 
 # data
 data:
@@ -13,31 +13,36 @@ data:
   train_test_split: 0.2
   train_val_split: 0.2
   input_size: [1, 224, 224]
-  batch_size: 256
-  num_workers: 16
+  batch_size: 32
+  normalization: global  # 'global' uses dataset-level statistics; 'per_image' standardizes each image independently
+  weighted_sampling: false
+  num_workers: 0
   augmentations:
     rotations:
       enabled: false
       max_angle: 7
     horizontal_flip:
       enabled: false
-      p: 0.0001
+      p: 0.5
     contrast_jitter:
       enabled: false
       contrast: 0.05
+    crop:
+      enabled: false
+      padding: 4
     
 # model
 model:
   architecture: resnet18
   pretrained: false
   base_channels: 64
-  norm: batch_size
+  norm: batch
   num_groups: 32
 
 # optimizer
 optimizer:
-  type: SGD
-  lr: 0.1
+  type: AdamW
+  lr: 3e-4
   momentum: 0.9
   weight_decay: 0.0
 
@@ -55,11 +60,14 @@ scheduler:
 
 # training
 training:
-  max_epochs: 200
+  max_epochs: 100
   precision: 32
   log_every_n_steps: 50
   val_interval: 1
-  weighted_loss: true
+  weighted_loss: false
+  loss: bce
+  focal_gamma: 2.0
+  focal_alpha: null
 
 # regularization
 regularization: 

@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from model.model import ResNet
 from model.blocks import ResidualBlock, ResidualBottleneckBlock
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms as T
 import random
 import numpy as np
@@ -12,6 +12,7 @@ from typing import Literal
 from pathlib import Path
 from omegaconf import OmegaConf
 from parse import parse
+from losses.focal import BinaryFocalLoss
     
 
 def get_device() -> torch.device:
@@ -54,6 +55,18 @@ def set_seed(seed: int) -> None:
     os.environ["PYTHONHASHSEED"] = str(seed)
     
 
+class PerImageStandardize:
+    """Standardize each image to zero mean and unit variance (per-image, not global)."""
+
+    def __init__(self, eps: float = 1e-8):
+        self.eps = eps
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        mean = x.mean()
+        std = x.std()
+        return (x - mean) / (std + self.eps)
+
+
 def build_transform(cfg: OmegaConf, train: bool) -> T.transforms:
     """Build the training transform
 
@@ -75,10 +88,19 @@ def build_transform(cfg: OmegaConf, train: bool) -> T.transforms:
         # Random Contrast Jitter
         if augment_cfg.contrast_jitter.enabled:
             transforms.append(T.ColorJitter(contrast=augment_cfg.contrast_jitter.contrast))
-    
+        # Random Crop
+        if augment_cfg.crop.enabled:
+            transforms.append(T.RandomCrop(size=cfg.data.input_size[1:], padding=augment_cfg.crop.padding))
+
     transforms.append(T.Resize(cfg.data.input_size[1:]))
     transforms.append(T.ToTensor())
-    transforms.append(T.Normalize((0.4913,), (0.2494,)))  # Training DS Statistics
+
+    normalization = cfg.data.get("normalization", "global")
+    if normalization == "per_image":
+        transforms.append(PerImageStandardize())
+    else:
+        transforms.append(T.Normalize((0.4913,), (0.2494,)))  # Training DS Statistics
+
     transforms = T.Compose(transforms)
     return transforms
     
@@ -116,18 +138,39 @@ def build_dataloader(cfg: OmegaConf, stage: Literal["train", "val", "test"]) -> 
     # Load the dataset
     ds = ChestXRayDataset(csv_path, Path(cfg.data.src_dir), transforms)    
     
-    # Ensure the same shuffle order and random augmentations per epoch
-    g = torch.Generator()
-    g.manual_seed(cfg.experiment.seed)
-    dataloader = DataLoader(
-        dataset = ds,
-        batch_size = cfg.data.batch_size,
-        shuffle = True if stage == 'train' else False,
-        num_workers = cfg.data.num_workers,
-        worker_init_fn = seed_worker,
-        generator = g,
-        pin_memory = True if stage == 'train' else False
-    )
+    if stage == 'train' and cfg.data.weighted_sampling:
+        # Get the Sampler
+        sampler = WeightedRandomSampler(
+            weights=ds.get_sample_weights().double(),
+            num_samples=len(ds),
+            replacement=True
+        )
+        
+        # Ensure the same shuffle order and random augmentations per epoch
+        g = torch.Generator()
+        g.manual_seed(cfg.experiment.seed)
+        dataloader = DataLoader(
+            dataset = ds,
+            batch_size = cfg.data.batch_size,
+            # shuffle = True if stage == 'train' else False,
+            sampler = sampler,
+            num_workers = cfg.data.num_workers,
+            worker_init_fn = seed_worker,
+            generator = g,
+            pin_memory = True if stage == 'train' else False
+        )
+    else:
+        g = torch.Generator()
+        g.manual_seed(cfg.experiment.seed)
+        dataloader = DataLoader(
+            dataset = ds,
+            batch_size = cfg.data.batch_size,
+            shuffle = True if stage == 'train' else False,
+            num_workers = cfg.data.num_workers,
+            worker_init_fn = seed_worker,
+            generator = g,
+            pin_memory = True if stage == 'train' else False
+        )
     return dataloader
 
 
@@ -312,7 +355,10 @@ def get_loss_fn(cfg: OmegaConf, train_ds: ChestXRayDataset) -> nn.Module:
     Returns:
         nn.Module: CrossEntropyLoss object
     """
-    if cfg.training.weighted_loss:
-        return nn.BCEWithLogitsLoss(weight=torch.tensor([train_ds.get_pos_weight()]))
-    else:
-        return nn.BCEWithLogitsLoss()
+    if cfg.training.loss == 'bce':
+        if cfg.training.weighted_loss:
+            return nn.BCEWithLogitsLoss(pos_weight=torch.tensor([train_ds.get_pos_weight()]))
+        else:
+            return nn.BCEWithLogitsLoss()
+    elif cfg.training.loss == 'focal':
+        return BinaryFocalLoss(cfg.training.focal_gamma, cfg.training.focal_alpha, reduction='mean')

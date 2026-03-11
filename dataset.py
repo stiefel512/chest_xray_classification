@@ -1,3 +1,4 @@
+import torch
 from torch.utils.data import Dataset
 from PIL import Image
 from torchvision import transforms as T
@@ -37,3 +38,10 @@ class ChestXRayDataset(Dataset):
             return num_neg / num_pos
         else:
             return 0.0
+        
+    def get_sample_weights(self) -> torch.Tensor:
+        targets = self.df["target"]
+        class_counts = targets.value_counts()
+        weights = np.array([1.0 / class_counts[target] for target in targets])
+        return torch.from_numpy(weights)
+        

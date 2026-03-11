@@ -37,7 +37,7 @@ from torchmetrics.classification import (
 )
 from torchmetrics import AveragePrecision
 
-def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim.Optimizer, loss_fn: nn.Module, device: torch.device) -> Tuple[float, float]:
+def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim.Optimizer, loss_fn: nn.Module, device: torch.device, cfg: OmegaConf) -> Tuple[float, float]:
     """Train the model for one epoch
 
     Args:
@@ -128,7 +128,6 @@ def validate(model: nn.Module,
             loss = loss_fn(pred, y.unsqueeze(1))
             
             val_loss += loss.item() * x.size(0)
-            # probs = torch.sigmoid(pred)
             all_preds.append(pred)
               
     preds = torch.cat(all_preds, dim=0).squeeze()
@@ -273,12 +272,12 @@ def train(cfg: OmegaConf) -> None:
     ap_metric = AveragePrecision(task='binary').to(device)
     acc_metric = BinaryAccuracy(threshold=0.5).to(device)
     
-    best_acc = 0
+    best_auroc = 0
     results = []
     # Train
     for epoch in range(cfg.training.max_epochs):
         # Train on the training data
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, loss_fn, device)
+        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, loss_fn, device, cfg)
         # Validate on the validation data
         val_loss, val_acc, val_auroc, val_ap, val_ppr = validate(model, val_loader, loss_fn, device, auroc_metric, ap_metric, acc_metric)
         print(f"Epoch {epoch}:\tTrain Loss {train_loss}, Train Acc {train_acc}")
@@ -293,8 +292,8 @@ def train(cfg: OmegaConf) -> None:
                         'val_auroc': val_auroc,
                         'val_ap': val_ap,
                         'val_ppr': val_ppr})
-        if val_acc >= best_acc:
-            best_acc = val_acc
+        if val_auroc >= best_auroc:
+            best_auroc = val_auroc
             torch.save(model.state_dict(), f"{cfg.experiment.output_dir}/best.pt")
         # Advance the LR Scheduler
         if scheduler:
@@ -305,7 +304,7 @@ def train(cfg: OmegaConf) -> None:
     results_df.to_csv(f"{cfg.experiment.output_dir}/log.csv")
     
     # Final evaluation:
-    # best_model = load_best_model(cfg)
+    best_model = load_best_model(cfg)
     final_evaluation(model, val_loader, device, cfg)    
     
 
