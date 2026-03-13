@@ -51,10 +51,10 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
         Tuple[float, float]: Average model loss and accuracy across the training epoch
     """
     model.train()
-    
-    for m in model.modules():
-        if isinstance(m, nn.BatchNorm2d):
-            m.eval()
+    if cfg.data.weighted_sampling:
+        for m in model.modules():
+            if isinstance(m, nn.BatchNorm2d):
+                m.eval()
     
     train_loss = 0.0
     correct = 0
