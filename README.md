@@ -80,6 +80,13 @@ During training, we monitor loss and threshold-independent metrics (ROC-AUC, PR-
 
 ## 9. Key Experiments & Findings
 
+- **Experiment 1: Naive Baseline**
+In small imbalanced medical datasets, large-batch training leads to majority-class collapse even when loss decreases.
+
+An early configuration bug set the learning rate to 3e-6 instead of 3e-3, resulting in near-static training for hundreds of epochs. This highlighted the importance of monitoring optimization dynamics and logging learning rates explicitly.
+
+- **Experiment 2: Loss Weighting for class imbalance**
+
 ## 10. Failure Analysis
 
 ## 11. Limitations

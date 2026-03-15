@@ -1,0 +1,68 @@
+experiment:
+  name: resnet18_xray
+  seed: 42
+  output_dir: experiments/experiment4
+data:
+  src_dir: /home/avis/data/kaggle/chest_x_ray
+  data_dir: data/NIH_Chest_X_Rays
+  pathology: Pneumonia
+  dataset_size: 8000
+  train_test_split: 0.2
+  train_val_split: 0.2
+  input_size:
+  - 1
+  - 224
+  - 224
+  batch_size: 32
+  normalization: global
+  weighted_sampling: false
+  num_workers: 0
+  augmentations:
+    rotations:
+      enabled: true
+      max_angle: 7
+    horizontal_flip:
+      enabled: true
+      p: 0.5
+    contrast_jitter:
+      enabled: false
+      contrast: 0.05
+    crop:
+      enabled: true
+      padding: 4
+model:
+  architecture: resnet18
+  pretrained: false
+  base_channels: 64
+  norm: batch
+  num_groups: 32
+optimizer:
+  type: AdamW
+  lr: 0.0003
+  momentum: 0.9
+  weight_decay: 0.0
+scheduler:
+  type: cosine
+  cosine_schedule:
+    eta_min: 1.0e-06
+  step_schedule:
+    step_size: 30
+    gamma: 0.1
+  warmup:
+    epochs: 5
+    start_factor: 0.001
+training:
+  max_epochs: 100
+  precision: 32
+  log_every_n_steps: 50
+  val_interval: 1
+  weighted_loss: false
+  loss: bce
+  focal_gamma: 2.0
+  focal_alpha: null
+regularization:
+  label_smoothing: 0.0
+  dropout: 0.0
+evaluation:
+  specificity: 0.9
+  accuracy_threshold: 0.5
