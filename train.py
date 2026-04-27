@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -15,13 +16,14 @@ import numpy as np
 import pprint
 
 from training.utils import (
-    get_device, 
-    set_seed, 
-    build_dataloader, 
-    build_model, 
-    kaiming_init, 
-    zero_init_residual, 
+    get_device,
+    set_seed,
+    build_dataloader,
+    build_model,
+    kaiming_init,
+    zero_init_residual,
     build_optimizer,
+    build_finetune_optimizer,
     build_scheduler,
     get_loss_fn
 )
@@ -51,7 +53,7 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
         Tuple[float, float]: Average model loss and accuracy across the training epoch
     """
     model.train()
-    if cfg.data.weighted_sampling:
+    if cfg.data.weighted_sampling or cfg.model.pretrained:
         for m in model.modules():
             if isinstance(m, nn.BatchNorm2d):
                 m.eval()
@@ -255,13 +257,26 @@ def train(cfg: OmegaConf) -> None:
     
     # Build the Model
     model = build_model(cfg)
-    kaiming_init(model)
-    zero_init_residual(model)
+    if not cfg.model.pretrained:
+        kaiming_init(model)
+        zero_init_residual(model)
+    # Prior probability init: bias = log(p/(1-p)) = -log(pos_weight)
+    # Ensures focal loss gradients are asymmetric from epoch 0 (focal loss paper §4.1)
+    if cfg.training.loss == 'focal':
+        pos_weight = train_loader.dataset.get_pos_weight()
+        nn.init.constant_(model.fc.bias, -math.log(pos_weight))
     model.to(device)
-    
+
+    # Stage 1: freeze backbone so only the head trains first
+    freeze_epochs = cfg.model.get('freeze_backbone_epochs', 0) if cfg.model.pretrained else 0
+    if freeze_epochs > 0:
+        for name, param in model.named_parameters():
+            if not name.startswith('fc'):
+                param.requires_grad = False
+
     # Get the optimizer
     optimizer = build_optimizer(cfg.optimizer, model)
-    
+
     # Get the scheduler
     scheduler = build_scheduler(cfg, optimizer)
     
@@ -276,6 +291,18 @@ def train(cfg: OmegaConf) -> None:
     results = []
     # Train
     for epoch in range(cfg.training.max_epochs):
+        # Stage 2: unfreeze backbone with differential LR
+        if freeze_epochs > 0 and epoch == freeze_epochs:
+            for param in model.parameters():
+                param.requires_grad = True
+            current_lr = max(g['lr'] for g in optimizer.param_groups)
+            optimizer = build_finetune_optimizer(cfg.optimizer, model, backbone_lr=current_lr / 10)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=cfg.training.max_epochs - epoch,
+                eta_min=cfg.scheduler.cosine_schedule.eta_min
+            )
+
         # Train on the training data
         train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, loss_fn, device, cfg)
         # Validate on the validation data
@@ -283,29 +310,34 @@ def train(cfg: OmegaConf) -> None:
         print(f"Epoch {epoch}:\tTrain Loss {train_loss}, Train Acc {train_acc}")
         print(f"\t\t:Val Loss {val_loss}, Val Acc {val_acc}, Val ROC-AUC {val_auroc}, Val AP {val_ap}, Val PPR {val_ppr}")
 
-        results.append({'epoch': epoch, 
-                        'lr': scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]['lr'], 
-                        'train_loss': train_loss, 
-                        'train_acc': train_acc, 
-                        'val_loss': val_loss, 
-                        'val_acc': val_acc,
-                        'val_auroc': val_auroc,
-                        'val_ap': val_ap,
-                        'val_ppr': val_ppr})
+        row = {'epoch': epoch,
+               'lr': max(g['lr'] for g in optimizer.param_groups),
+               'train_loss': train_loss,
+               'train_acc': train_acc,
+               'val_loss': val_loss,
+               'val_acc': val_acc,
+               'val_auroc': val_auroc,
+               'val_ap': val_ap,
+               'val_ppr': val_ppr}
+        results.append(row)
+        pd.DataFrame([row]).to_csv(
+            f"{cfg.experiment.output_dir}/log.csv",
+            mode='a',
+            header=(epoch == 0)
+        )
         if val_auroc >= best_auroc:
             best_auroc = val_auroc
             torch.save(model.state_dict(), f"{cfg.experiment.output_dir}/best.pt")
         # Advance the LR Scheduler
         if scheduler:
             scheduler.step()
-    
+
     torch.save(model.state_dict(), f"{cfg.experiment.output_dir}/last.pt")
-    results_df = pd.DataFrame(results)
-    results_df.to_csv(f"{cfg.experiment.output_dir}/log.csv")
     
     # Final evaluation:
     best_model = load_best_model(cfg)
-    final_evaluation(model, val_loader, device, cfg)    
+    test_loader = build_dataloader(cfg, 'test')
+    final_evaluation(best_model, test_loader, device, cfg)    
     
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ from torch import nn
 from model.model import ResNet
 from model.blocks import ResidualBlock, ResidualBottleneckBlock
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
-from torchvision import transforms as T
+from torchvision import transforms as T, models as tv_models
 import random
 import numpy as np
 import os
@@ -187,10 +187,20 @@ def build_model(cfg: OmegaConf) -> nn.Module:
     Returns:
         nn.Module: ResNet
     """
+    if cfg.model.pretrained:
+        model = tv_models.resnet18(weights='DEFAULT')
+        # Adapt first conv for single-channel input by averaging the 3-channel pretrained weights
+        original_weight = model.conv1.weight.data  # [64, 3, 7, 7]
+        model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        model.conv1.weight.data = original_weight.mean(dim=1, keepdim=True)
+        # Replace classifier for binary output
+        model.fc = nn.Linear(512, 1)
+        return model
+
     arch = parse("resnet{configuration}", cfg.model.architecture)
     if arch is None:
         raise Exception("Incorrect Model Architecture")
-    
+
     return ResNet(
         configuration = int(arch['configuration']),
         in_channels = cfg.data.input_size[0],
@@ -243,6 +253,24 @@ def zero_init_residual(model: nn.Module) -> None:
             if hasattr(m.norm3, "weight"):
                 nn.init.zeros_(m.norm3.weight)
                 
+
+def build_finetune_optimizer(optimizer_conf: OmegaConf, model: nn.Module, backbone_lr: float) -> torch.optim.Optimizer:
+    """AdamW with differential LR: backbone at backbone_lr, fc head at optimizer_conf.lr."""
+    backbone_decay, backbone_no_decay, head_decay, head_no_decay = [], [], [], []
+    for name, param in model.named_parameters():
+        is_head = name.startswith('fc')
+        is_no_decay = param.ndim == 1 or 'bias' in name
+        if is_head:
+            (head_no_decay if is_no_decay else head_decay).append(param)
+        else:
+            (backbone_no_decay if is_no_decay else backbone_decay).append(param)
+    return torch.optim.AdamW([
+        {'params': backbone_decay,    'lr': backbone_lr,         'weight_decay': optimizer_conf.weight_decay},
+        {'params': backbone_no_decay, 'lr': backbone_lr,         'weight_decay': 0.0},
+        {'params': head_decay,        'lr': optimizer_conf.lr,   'weight_decay': optimizer_conf.weight_decay},
+        {'params': head_no_decay,     'lr': optimizer_conf.lr,   'weight_decay': 0.0},
+    ])
+
 
 def build_optimizer(optimizer_conf: OmegaConf, model: nn.Module) -> torch.optim.Optimizer:
     """Build the Optimizer
